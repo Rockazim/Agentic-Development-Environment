@@ -2,14 +2,15 @@
   "name": "ade-desktop",
   "version": "0.1.1",
   "private": true,
+  "author": "Rockazim",
   "description": "Agentic Development Environment desktop shell",
   "main": "electron/main.js",
   "scripts": {
     "postinstall": "node ./scripts/install-electron-pty.js",
     "dev": "electron .",
     "start": "electron .",
-    "dist:win": "electron-builder --win nsis",
-    "dist:mac": "electron-builder --mac dmg"
+    "dist:win": "electron-builder --win nsis --publish never",
+    "dist:mac": "electron-builder --mac dmg --publish never"
   },
   "build": {
     "appId": "com.agenticdevenv.desktop",
