@@ -115,7 +115,7 @@ button{font:inherit;color:inherit}
   align-items:center;
   gap:8px;
   padding:0 8px;
-  color:var(--muted-2);
+  color:var(--muted);
   background:rgba(13,16,23,.98);
   border-bottom:1px solid #121722;
   font-size:10px;
@@ -128,7 +128,7 @@ button{font:inherit;color:inherit}
   width:6px;
   height:6px;
   border-radius:999px;
-  background:#242b39;
+  background:#3a4358;
 }
 .pane-path{
   overflow:hidden;
@@ -201,6 +201,17 @@ button{font:inherit;color:inherit}
   gap:8px;
   padding-left:8px;
 }
+.keys-toggle{
+  border:1px solid #1d2431;
+  background:#111620;
+  color:var(--muted-2);
+  padding:2px 8px;
+  border-radius:999px;
+  cursor:pointer;
+  font-size:10px;
+  line-height:1;
+}
+.keys-toggle:hover{color:var(--muted);border-color:#293345}
 .voice-status{
   font-size:10px;
   color:var(--muted-2);
@@ -329,6 +340,82 @@ button{font:inherit;color:inherit}
   border-color:#2a3a54;
 }
 .ws-actions button.primary:hover{background:#223050}
+.hotkeys-dialog-box{
+  width:520px;
+}
+.hotkey-help{
+  margin-top:-4px;
+}
+.hotkey-list{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.hotkey-row{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:6px;
+  background:#0d1119;
+}
+.hotkey-meta{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.hotkey-name{
+  font-size:11px;
+  color:var(--text);
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+.hotkey-desc{
+  color:var(--muted-2);
+  line-height:1.45;
+}
+.hotkey-controls{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-shrink:0;
+}
+.hotkey-capture,
+.hotkey-clear{
+  border:1px solid var(--line);
+  border-radius:4px;
+  background:#141a26;
+  color:var(--muted);
+  cursor:pointer;
+  font-family:inherit;
+  font-size:11px;
+}
+.hotkey-capture{
+  min-width:148px;
+  padding:6px 10px;
+  text-align:center;
+}
+.hotkey-clear{
+  padding:6px 10px;
+}
+.hotkey-capture:hover,
+.hotkey-clear:hover{color:var(--text);border-color:var(--line-2)}
+.hotkey-capture.listening{
+  color:var(--text);
+  border-color:#31527a;
+  background:#172231;
+}
+.hotkey-clear:disabled{
+  cursor:default;
+  opacity:.5;
+}
+.hotkey-clear:disabled:hover{
+  color:var(--muted);
+  border-color:var(--line);
+}
 
 @media (max-width:1100px){
   .grid{
@@ -355,6 +442,7 @@ button{font:inherit;color:inherit}
   <div class="workspace-tabs" id="tab-bar">
     <button class="tab-add" id="add-tab-btn" type="button" title="new workspace">+</button>
     <div class="voice-controls">
+      <button class="keys-toggle" id="keys-toggle" type="button" title="adjust hotkeys">keys</button>
       <button class="voice-clean-toggle active" id="voice-clean-toggle" type="button" title="toggle voice transcript cleanup">clean</button>
       <button class="voice-toggle" id="voice-toggle" type="button" title="toggle voice typing">mic</button>
       <div class="voice-status" id="voice-status">voice off</div>
@@ -401,6 +489,17 @@ button{font:inherit;color:inherit}
     <div class="ws-actions">
       <button id="ws-cancel" type="button">cancel</button>
       <button id="ws-create" type="button" class="primary">create</button>
+    </div>
+  </div>
+</div>
+<div class="ws-dialog" id="hotkeys-dialog">
+  <div class="ws-dialog-box hotkeys-dialog-box">
+    <div class="ws-dialog-title">hotkeys</div>
+    <div class="ws-help hotkey-help" id="hotkeys-help">Press a row to record a new shortcut. Plain keys are allowed, but only fire outside terminal focus. Esc cancels capture.</div>
+    <div class="hotkey-list" id="hotkey-list"></div>
+    <div class="ws-actions">
+      <button id="hotkeys-reset" type="button">reset defaults</button>
+      <button id="hotkeys-close" type="button" class="primary">done</button>
     </div>
   </div>
 </div>

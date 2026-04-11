@@ -3,6 +3,26 @@ import { FitAddon } from "./node_modules/@xterm/addon-fit/lib/addon-fit.mjs";
 
 const TONES = ["green", "cyan", "orange", "purple", "red"];
 const VOICE_CLEANUP_STORAGE_KEY = "ade.voiceCleanupEnabled";
+const HOTKEYS_STORAGE_KEY = "ade.hotkeys";
+const HOTKEY_CAPTURE_HELP =
+  "Press a row to record a new shortcut. Plain keys are allowed, but only fire outside terminal focus. Esc cancels capture.";
+const HOTKEY_ACTIONS = {
+  voiceToggle: {
+    label: "voice transcription",
+    description: "Start or stop push-to-talk transcription for the active pane.",
+    defaultBinding: { code: "KeyV", primary: true, alt: false, shift: true }
+  },
+  addPane: {
+    label: "add pane",
+    description: "Create another terminal pane inside the current workspace.",
+    defaultBinding: { code: "KeyT", primary: true, alt: false, shift: true }
+  },
+  removePane: {
+    label: "close pane",
+    description: "Close the active terminal pane. If it is the last pane, the workspace closes.",
+    defaultBinding: { code: "Backspace", primary: true, alt: false, shift: true }
+  }
+};
 const GRID_LAYOUTS = {
   2: { cols: 2, rows: 1 },
   3: { cols: 3, rows: 1 },
@@ -57,6 +77,8 @@ let voiceWarmupPromise = null;
 let voiceBackendReady = false;
 let decodeAudioContext = null;
 let voiceCleanupEnabled = loadVoiceCleanupPreference();
+let hotkeys = loadHotkeys();
+let hotkeyCaptureActionId = null;
 
 // ── DOM refs ───────────────────────────────────────
 
@@ -71,9 +93,15 @@ const dialogProfile = document.getElementById("ws-profile");
 const dialogCreate = document.getElementById("ws-create");
 const dialogCancel = document.getElementById("ws-cancel");
 const dialogBrowse = document.getElementById("ws-browse");
+const keysToggle = document.getElementById("keys-toggle");
 const voiceToggle = document.getElementById("voice-toggle");
 const voiceCleanToggle = document.getElementById("voice-clean-toggle");
 const voiceStatus = document.getElementById("voice-status");
+const hotkeysDialog = document.getElementById("hotkeys-dialog");
+const hotkeysHelp = document.getElementById("hotkeys-help");
+const hotkeysList = document.getElementById("hotkey-list");
+const hotkeysReset = document.getElementById("hotkeys-reset");
+const hotkeysClose = document.getElementById("hotkeys-close");
 
 // ── Terminal helpers ───────────────────────────────
 
@@ -177,6 +205,314 @@ function getActivePaneRecord() {
   }
 
   return null;
+}
+
+function getWorkspaceById(id) {
+  return workspaces.find(workspace => workspace.id === id) || null;
+}
+
+function getActiveWorkspace() {
+  return getWorkspaceById(activeWorkspaceId);
+}
+
+function getGridLayout(paneCount) {
+  if (GRID_LAYOUTS[paneCount]) {
+    return GRID_LAYOUTS[paneCount];
+  }
+
+  const rows = Math.max(1, Math.ceil(Math.sqrt(paneCount / 1.8)));
+  const cols = Math.max(1, Math.ceil(paneCount / rows));
+  return { cols, rows };
+}
+
+function setActivePane(pane) {
+  document.querySelectorAll(".pane.active").forEach(activePane => {
+    activePane.classList.remove("active");
+  });
+
+  if (!pane) {
+    activePaneRef = null;
+    return;
+  }
+
+  pane.paneEl.classList.add("active");
+  activePaneRef = pane.paneEl;
+  pane.term.focus();
+}
+
+function cloneBinding(binding) {
+  return binding ? { ...binding } : null;
+}
+
+function isModifierCode(code) {
+  return [
+    "ControlLeft",
+    "ControlRight",
+    "MetaLeft",
+    "MetaRight",
+    "AltLeft",
+    "AltRight",
+    "ShiftLeft",
+    "ShiftRight"
+  ].includes(code);
+}
+
+function normalizeHotkeyBinding(binding) {
+  if (binding == null) {
+    return null;
+  }
+
+  if (typeof binding !== "object" || typeof binding.code !== "string" || !binding.code) {
+    return null;
+  }
+
+  return {
+    code: binding.code,
+    primary: Boolean(binding.primary),
+    alt: Boolean(binding.alt),
+    shift: Boolean(binding.shift)
+  };
+}
+
+function getDefaultHotkeys() {
+  return Object.fromEntries(
+    Object.entries(HOTKEY_ACTIONS).map(([actionId, action]) => [
+      actionId,
+      cloneBinding(action.defaultBinding)
+    ])
+  );
+}
+
+function loadHotkeys() {
+  const defaults = getDefaultHotkeys();
+
+  try {
+    const raw = window.localStorage.getItem(HOTKEYS_STORAGE_KEY);
+
+    if (!raw) {
+      return defaults;
+    }
+
+    const parsed = JSON.parse(raw);
+
+    if (!parsed || typeof parsed !== "object") {
+      return defaults;
+    }
+
+    const loaded = { ...defaults };
+
+    for (const actionId of Object.keys(HOTKEY_ACTIONS)) {
+      if (Object.prototype.hasOwnProperty.call(parsed, actionId)) {
+        loaded[actionId] = normalizeHotkeyBinding(parsed[actionId]);
+      }
+    }
+
+    return loaded;
+  } catch {
+    return defaults;
+  }
+}
+
+function saveHotkeys() {
+  try {
+    window.localStorage.setItem(HOTKEYS_STORAGE_KEY, JSON.stringify(hotkeys));
+  } catch {
+    // Ignore localStorage failures in restricted runtimes.
+  }
+}
+
+function getHotkeyBinding(actionId) {
+  return hotkeys[actionId] ?? cloneBinding(HOTKEY_ACTIONS[actionId]?.defaultBinding) ?? null;
+}
+
+function getPrimaryModifierLabel() {
+  return runtimeInfo?.platform === "darwin" ? "Cmd" : "Ctrl";
+}
+
+function getAltModifierLabel() {
+  return runtimeInfo?.platform === "darwin" ? "Option" : "Alt";
+}
+
+function formatHotkeyCode(code) {
+  const keyMap = {
+    Backquote: "`",
+    Minus: "-",
+    Equal: "=",
+    BracketLeft: "[",
+    BracketRight: "]",
+    Backslash: "\\",
+    Semicolon: ";",
+    Quote: "'",
+    Comma: ",",
+    Period: ".",
+    Slash: "/",
+    Space: "Space",
+    Escape: "Esc",
+    Backspace: "Backspace",
+    Enter: "Enter",
+    Tab: "Tab",
+    Delete: "Delete",
+    Insert: "Insert",
+    Home: "Home",
+    End: "End",
+    PageUp: "Page Up",
+    PageDown: "Page Down",
+    ArrowUp: "Up",
+    ArrowDown: "Down",
+    ArrowLeft: "Left",
+    ArrowRight: "Right"
+  };
+
+  if (keyMap[code]) {
+    return keyMap[code];
+  }
+
+  if (/^Key[A-Z]$/.test(code)) {
+    return code.slice(3);
+  }
+
+  if (/^Digit[0-9]$/.test(code)) {
+    return code.slice(5);
+  }
+
+  if (/^F\d{1,2}$/.test(code)) {
+    return code;
+  }
+
+  return code;
+}
+
+function formatHotkeyLabel(binding) {
+  if (!binding) {
+    return "unassigned";
+  }
+
+  const parts = [];
+
+  if (binding.primary) {
+    parts.push(getPrimaryModifierLabel());
+  }
+
+  if (binding.alt) {
+    parts.push(getAltModifierLabel());
+  }
+
+  if (binding.shift) {
+    parts.push("Shift");
+  }
+
+  parts.push(formatHotkeyCode(binding.code));
+  return parts.join("+");
+}
+
+function bindingsEqual(a, b) {
+  if (!a || !b) {
+    return false;
+  }
+
+  return (
+    a.code === b.code &&
+    a.primary === b.primary &&
+    a.alt === b.alt &&
+    a.shift === b.shift
+  );
+}
+
+function findHotkeyConflict(actionId, binding) {
+  for (const otherActionId of Object.keys(HOTKEY_ACTIONS)) {
+    if (otherActionId === actionId) {
+      continue;
+    }
+
+    if (bindingsEqual(getHotkeyBinding(otherActionId), binding)) {
+      return otherActionId;
+    }
+  }
+
+  return null;
+}
+
+function hotkeyMatchesEvent(binding, event) {
+  if (!binding || event.code !== binding.code) {
+    return false;
+  }
+
+  const primaryPressed = event.ctrlKey || event.metaKey;
+  return (
+    primaryPressed === binding.primary &&
+    event.altKey === binding.alt &&
+    event.shiftKey === binding.shift
+  );
+}
+
+function bindingNeedsSafeFocus(binding) {
+  return Boolean(binding) && !binding.primary && !binding.alt;
+}
+
+function isTerminalFocusTarget(target) {
+  return (
+    target instanceof Element &&
+    Boolean(target.closest(".terminal-host, .xterm, .xterm-helper-textarea"))
+  );
+}
+
+function isEditableFocusTarget(target) {
+  return (
+    target instanceof Element &&
+    Boolean(target.closest("input, textarea, select, [contenteditable='true']"))
+  );
+}
+
+function shouldBlockBindingForFocus(binding, event) {
+  if (!bindingNeedsSafeFocus(binding)) {
+    return false;
+  }
+
+  const eventTarget = event.target;
+  const activeElement = document.activeElement;
+
+  return (
+    isEditableFocusTarget(eventTarget) ||
+    isEditableFocusTarget(activeElement) ||
+    isTerminalFocusTarget(eventTarget) ||
+    isTerminalFocusTarget(activeElement)
+  );
+}
+
+function hotkeyFromEvent(event) {
+  if (isModifierCode(event.code)) {
+    return null;
+  }
+
+  const binding = {
+    code: event.code,
+    primary: event.ctrlKey || event.metaKey,
+    alt: event.altKey,
+    shift: event.shiftKey
+  };
+  return binding;
+}
+
+function getHotkeyLabel(actionId) {
+  return formatHotkeyLabel(getHotkeyBinding(actionId));
+}
+
+function setHotkeysHelp(text = HOTKEY_CAPTURE_HELP) {
+  if (hotkeysHelp) {
+    hotkeysHelp.textContent = text;
+  }
+}
+
+function refreshHotkeyUi() {
+  if (keysToggle) {
+    keysToggle.title = "adjust hotkeys";
+  }
+
+  refreshVoiceToggle();
+
+  if (hotkeysDialog?.classList.contains("open")) {
+    renderHotkeyList();
+  }
 }
 
 function loadVoiceCleanupPreference() {
@@ -304,23 +640,24 @@ function refreshVoiceToggle() {
   const unsupported =
     voiceStatus.classList.contains("unsupported") &&
     !voiceStatus.textContent.startsWith("typed:");
+  const voiceShortcutLabel = getHotkeyLabel("voiceToggle");
 
   if (voiceTranscribing) {
     voiceToggle.textContent = "wait";
-    voiceToggle.title = "Transcribing recorded audio";
+    voiceToggle.title = `Transcribing recorded audio (${voiceShortcutLabel})`;
     voiceToggle.disabled = true;
     return;
   }
 
   if (voiceRecording) {
     voiceToggle.textContent = "stop";
-    voiceToggle.title = "Stop recording and transcribe";
+    voiceToggle.title = `Stop recording and transcribe (${voiceShortcutLabel})`;
     voiceToggle.disabled = false;
     return;
   }
 
   voiceToggle.textContent = "mic";
-  voiceToggle.title = "Start push-to-talk recording";
+  voiceToggle.title = `Start push-to-talk recording (${voiceShortcutLabel})`;
   voiceToggle.disabled = !voiceAvailable || unsupported;
 }
 
@@ -724,6 +1061,99 @@ async function switchPaneProfile(pane, profileId) {
 
 // ── Workspace management ───────────────────────────
 
+async function createWorkspacePane(ws, { cwd = ws.cwd, profileId = ws.profileId } = {}) {
+  const startingProfileId = getProfileById(profileId)?.id || ws.profileId || defaultProfileId || profiles[0]?.id || null;
+  const { term, fitAddon } = createTermInstance();
+  const pane = {
+    paneEl: document.createElement("section"),
+    term,
+    fitAddon,
+    resizeObserver: null,
+    sessionId: null,
+    host: null,
+    pathEl: null,
+    runtimeSelect: null,
+    cwd,
+    profileId: startingProfileId,
+    suppressedExitId: null
+  };
+
+  pane.paneEl.className = "pane";
+  pane.paneEl.innerHTML = `
+    <div class="pane-titlebar">
+      <div class="traffic"><span></span><span></span><span></span></div>
+      <div class="pane-path">starting...</div>
+      <div class="pane-runtime">
+        <select class="pane-profile-select" aria-label="terminal shell"></select>
+      </div>
+    </div>
+    <div class="terminal-host"></div>
+  `;
+
+  pane.host = pane.paneEl.querySelector(".terminal-host");
+  pane.pathEl = pane.paneEl.querySelector(".pane-path");
+  pane.runtimeSelect = pane.paneEl.querySelector(".pane-profile-select");
+  pane.runtimeSelect.innerHTML = buildProfileOptions(startingProfileId);
+  pane.runtimeSelect.addEventListener("change", () => {
+    switchPaneProfile(pane, pane.runtimeSelect.value);
+  });
+  term.open(pane.host);
+
+  term.onData(data => {
+    if (pane.sessionId) {
+      window.adeDesktop.writeTerminal(pane.sessionId, data);
+    }
+  });
+
+  pane.resizeObserver = new ResizeObserver(() => {
+    fitAddon.fit();
+    if (pane.sessionId) {
+      window.adeDesktop.resizeTerminal(pane.sessionId, term.cols, term.rows);
+    }
+  });
+
+  pane.paneEl.addEventListener("click", () => {
+    setActivePane(pane);
+  });
+
+  await startPaneSession(pane, startingProfileId);
+  pane.paneEl.dataset.sessionId = pane.sessionId;
+  ws.panes.push(pane);
+  ws.paneCount = ws.panes.length;
+  return pane;
+}
+
+function renderWorkspaceGrid(ws, focusPane = null) {
+  const previousWorkspace = getActiveWorkspace();
+
+  if (previousWorkspace) {
+    for (const pane of previousWorkspace.panes) {
+      pane.resizeObserver.disconnect();
+    }
+  }
+
+  grid.innerHTML = "";
+  activeWorkspaceId = ws.id;
+
+  const layout = getGridLayout(ws.panes.length || ws.paneCount || 1);
+  grid.style.gridTemplateColumns = `repeat(${layout.cols}, minmax(0,1fr))`;
+  grid.style.gridTemplateRows = `repeat(${layout.rows}, minmax(0,1fr))`;
+
+  for (const pane of ws.panes) {
+    grid.appendChild(pane.paneEl);
+    pane.resizeObserver.observe(pane.host);
+    pane.fitAddon.fit();
+  }
+
+  const paneToFocus =
+    (focusPane && ws.panes.includes(focusPane) && focusPane) ||
+    ws.panes[0] ||
+    null;
+
+  setActivePane(paneToFocus);
+  renderTabs();
+}
+
 async function createWorkspace({ name, cwd, paneCount, profileId }) {
   const id = crypto.randomUUID();
   const tone = TONES[toneIndex % TONES.length];
@@ -734,65 +1164,7 @@ async function createWorkspace({ name, cwd, paneCount, profileId }) {
   workspaces.push(ws);
 
   for (let i = 0; i < paneCount; i++) {
-    const { term, fitAddon } = createTermInstance();
-    const pane = {
-      paneEl: document.createElement("section"),
-      term,
-      fitAddon,
-      resizeObserver: null,
-      sessionId: null,
-      host: null,
-      pathEl: null,
-      runtimeSelect: null,
-      cwd,
-      profileId: startingProfileId,
-      suppressedExitId: null
-    };
-
-    pane.paneEl.className = "pane";
-    pane.paneEl.innerHTML = `
-      <div class="pane-titlebar">
-        <div class="traffic"><span></span><span></span><span></span></div>
-        <div class="pane-path">starting...</div>
-        <div class="pane-runtime">
-          <select class="pane-profile-select" aria-label="terminal shell"></select>
-        </div>
-      </div>
-      <div class="terminal-host"></div>
-    `;
-
-    pane.host = pane.paneEl.querySelector(".terminal-host");
-    pane.pathEl = pane.paneEl.querySelector(".pane-path");
-    pane.runtimeSelect = pane.paneEl.querySelector(".pane-profile-select");
-    pane.runtimeSelect.innerHTML = buildProfileOptions(startingProfileId);
-    pane.runtimeSelect.addEventListener("change", () => {
-      switchPaneProfile(pane, pane.runtimeSelect.value);
-    });
-    term.open(pane.host);
-
-    term.onData(data => {
-      if (pane.sessionId) {
-        window.adeDesktop.writeTerminal(pane.sessionId, data);
-      }
-    });
-
-    pane.resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit();
-      if (pane.sessionId) {
-        window.adeDesktop.resizeTerminal(pane.sessionId, term.cols, term.rows);
-      }
-    });
-
-    pane.paneEl.addEventListener("click", () => {
-      document.querySelectorAll(".pane").forEach(p => p.classList.remove("active"));
-      pane.paneEl.classList.add("active");
-      activePaneRef = pane.paneEl;
-      term.focus();
-    });
-
-    await startPaneSession(pane, startingProfileId);
-    pane.paneEl.dataset.sessionId = pane.sessionId;
-    ws.panes.push(pane);
+    await createWorkspacePane(ws, { cwd, profileId: startingProfileId });
   }
 
   renderTabs();
@@ -800,42 +1172,101 @@ async function createWorkspace({ name, cwd, paneCount, profileId }) {
   return ws;
 }
 
-function switchToWorkspace(id) {
-  const ws = workspaces.find(w => w.id === id);
+async function addPaneToActiveWorkspace() {
+  const ws = getActiveWorkspace();
+
+  if (!ws) {
+    logApp("workspace", "add pane ignored", { reason: "no active workspace" });
+    return null;
+  }
+
+  const activePane = getActivePaneRecord();
+  const paneContext =
+    activePane && ws.panes.includes(activePane)
+      ? { cwd: activePane.cwd || ws.cwd, profileId: activePane.profileId || ws.profileId }
+      : { cwd: ws.cwd, profileId: ws.profileId };
+
+  const pane = await createWorkspacePane(ws, paneContext);
+  renderWorkspaceGrid(ws, pane);
+  logApp("workspace", "pane added", {
+    workspaceId: ws.id,
+    paneCount: ws.panes.length,
+    profileId: pane.profileId
+  });
+  return pane;
+}
+
+function destroyPane(pane) {
+  if (!pane) {
+    return;
+  }
+
+  pane.resizeObserver.disconnect();
+  pane.term.dispose();
+
+  if (pane.sessionId) {
+    window.adeDesktop.closeTerminal(pane.sessionId);
+  }
+}
+
+function removePaneFromWorkspace(ws, pane) {
+  const paneIndex = ws.panes.indexOf(pane);
+
+  if (paneIndex === -1) {
+    return null;
+  }
+
+  const nextFocusPane = ws.panes[paneIndex + 1] || ws.panes[paneIndex - 1] || null;
+  ws.panes.splice(paneIndex, 1);
+  ws.paneCount = ws.panes.length;
+  destroyPane(pane);
+  return nextFocusPane;
+}
+
+function removeActivePaneFromWorkspace() {
+  const ws = getActiveWorkspace();
+
+  if (!ws) {
+    logApp("workspace", "remove pane ignored", { reason: "no active workspace" });
+    return false;
+  }
+
+  const pane = getActivePaneRecord() || ws.panes[0] || null;
+
+  if (!pane) {
+    logApp("workspace", "remove pane ignored", { reason: "no active pane" });
+    return false;
+  }
+
+  if (ws.panes.length === 1) {
+    logApp("workspace", "last pane removed; closing workspace", {
+      workspaceId: ws.id
+    });
+    closeWorkspace(ws.id);
+    return true;
+  }
+
+  const nextFocusPane = removePaneFromWorkspace(ws, pane);
+  renderWorkspaceGrid(ws, nextFocusPane);
+  logApp("workspace", "pane removed", {
+    workspaceId: ws.id,
+    paneCount: ws.panes.length
+  });
+  return true;
+}
+
+function switchToWorkspace(id, { focusPane = null } = {}) {
+  const ws = getWorkspaceById(id);
 
   if (!ws) {
     return;
   }
 
-  // detach current panes from DOM (don't destroy)
-  grid.innerHTML = "";
-
-  activeWorkspaceId = id;
-
-  // set grid layout
-  const layout = GRID_LAYOUTS[ws.paneCount] || GRID_LAYOUTS[6];
-  grid.style.gridTemplateColumns = `repeat(${layout.cols}, minmax(0,1fr))`;
-  grid.style.gridTemplateRows = `repeat(${layout.rows}, minmax(0,1fr))`;
-
-  // attach panes
-  for (const pane of ws.panes) {
-    grid.appendChild(pane.paneEl);
-    pane.resizeObserver.observe(pane.host);
-    pane.fitAddon.fit();
-  }
-
-  // focus first pane
-  if (ws.panes.length) {
-    ws.panes[0].paneEl.classList.add("active");
-    activePaneRef = ws.panes[0].paneEl;
-    ws.panes[0].term.focus();
-  }
-
-  renderTabs();
+  renderWorkspaceGrid(ws, focusPane);
 }
 
 function closeWorkspace(id) {
-  const ws = workspaces.find(w => w.id === id);
+  const ws = getWorkspaceById(id);
 
   if (!ws) {
     return;
@@ -855,6 +1286,7 @@ function closeWorkspace(id) {
       switchToWorkspace(workspaces[workspaces.length - 1].id);
     } else {
       activeWorkspaceId = null;
+      activePaneRef = null;
       grid.innerHTML = `<div class="empty-state">press + to create a workspace</div>`;
       grid.style.gridTemplateColumns = "1fr";
       grid.style.gridTemplateRows = "1fr";
@@ -863,6 +1295,116 @@ function closeWorkspace(id) {
   } else {
     renderTabs();
   }
+}
+
+function renderHotkeyList() {
+  if (!hotkeysList) {
+    return;
+  }
+
+  hotkeysList.innerHTML = Object.entries(HOTKEY_ACTIONS)
+    .map(([actionId, action]) => {
+      const binding = getHotkeyBinding(actionId);
+      const isCapturing = hotkeyCaptureActionId === actionId;
+      const captureLabel = isCapturing ? "press keys..." : getHotkeyLabel(actionId);
+      const clearDisabled = binding ? "" : " disabled";
+      const listeningClass = isCapturing ? " listening" : "";
+
+      return `
+        <div class="hotkey-row" data-action-id="${escapeHtml(actionId)}">
+          <div class="hotkey-meta">
+            <div class="hotkey-name">${escapeHtml(action.label)}</div>
+            <div class="hotkey-desc">${escapeHtml(action.description)}</div>
+          </div>
+          <div class="hotkey-controls">
+            <button class="hotkey-capture${listeningClass}" data-hotkey-action="${escapeHtml(actionId)}" type="button">${escapeHtml(captureLabel)}</button>
+            <button class="hotkey-clear" data-hotkey-clear="${escapeHtml(actionId)}" type="button"${clearDisabled}>clear</button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function focusHotkeyCaptureButton(actionId) {
+  hotkeysList
+    ?.querySelector(`[data-hotkey-action="${actionId}"]`)
+    ?.focus();
+}
+
+function startHotkeyCapture(actionId) {
+  hotkeyCaptureActionId = actionId;
+  renderHotkeyList();
+  focusHotkeyCaptureButton(actionId);
+  setHotkeysHelp(
+    `Recording ${HOTKEY_ACTIONS[actionId].label}. Plain keys only fire outside terminal focus. Press a shortcut or Esc to cancel.`
+  );
+}
+
+function stopHotkeyCapture({ keepMessage = false } = {}) {
+  hotkeyCaptureActionId = null;
+  renderHotkeyList();
+
+  if (!keepMessage) {
+    setHotkeysHelp();
+  }
+}
+
+function openHotkeysDialog() {
+  if (dialog.classList.contains("open")) {
+    closeDialog();
+  }
+
+  stopHotkeyCapture();
+  setHotkeysHelp();
+  renderHotkeyList();
+  hotkeysDialog.classList.add("open");
+  hotkeysList.querySelector(".hotkey-capture")?.focus();
+}
+
+function closeHotkeysDialog() {
+  stopHotkeyCapture();
+  hotkeysDialog.classList.remove("open");
+  keysToggle?.focus();
+}
+
+function clearHotkey(actionId) {
+  hotkeys[actionId] = null;
+  saveHotkeys();
+  stopHotkeyCapture({
+    keepMessage: true
+  });
+  setHotkeysHelp(`${HOTKEY_ACTIONS[actionId].label} is now unassigned.`);
+  refreshHotkeyUi();
+}
+
+function resetHotkeysToDefaults() {
+  hotkeys = getDefaultHotkeys();
+  saveHotkeys();
+  stopHotkeyCapture({
+    keepMessage: true
+  });
+  setHotkeysHelp("Hotkeys reset to defaults.");
+  refreshHotkeyUi();
+}
+
+function applyCapturedHotkey(actionId, binding) {
+  const conflictActionId = findHotkeyConflict(actionId, binding);
+
+  if (conflictActionId) {
+    setHotkeysHelp(
+      `${formatHotkeyLabel(binding)} is already used by ${HOTKEY_ACTIONS[conflictActionId].label}.`
+    );
+    return;
+  }
+
+  hotkeys[actionId] = binding;
+  saveHotkeys();
+  stopHotkeyCapture({
+    keepMessage: true
+  });
+  setHotkeysHelp(`${HOTKEY_ACTIONS[actionId].label} set to ${formatHotkeyLabel(binding)}.`);
+  refreshHotkeyUi();
 }
 
 // ── Tab rendering ──────────────────────────────────
@@ -898,6 +1440,10 @@ function renderTabs() {
 // ── Dialog ─────────────────────────────────────────
 
 function openDialog() {
+  if (hotkeysDialog.classList.contains("open")) {
+    closeHotkeysDialog();
+  }
+
   dialogName.value = "";
   dialogPath.value = "";
   dialogPanes.value = "6";
@@ -911,8 +1457,11 @@ function closeDialog() {
 }
 
 addTabBtn.addEventListener("click", openDialog);
+keysToggle?.addEventListener("click", openHotkeysDialog);
 
 dialogCancel.addEventListener("click", closeDialog);
+hotkeysClose?.addEventListener("click", closeHotkeysDialog);
+hotkeysReset?.addEventListener("click", resetHotkeysToDefaults);
 
 dialogBrowse.addEventListener("click", async () => {
   const dir = await window.adeDesktop.pickDirectory();
@@ -955,6 +1504,61 @@ dialog.addEventListener("keydown", (e) => {
   }
 });
 
+hotkeysDialog?.addEventListener("click", event => {
+  if (event.target === hotkeysDialog) {
+    closeHotkeysDialog();
+    return;
+  }
+
+  const captureButton = event.target.closest("[data-hotkey-action]");
+
+  if (captureButton) {
+    startHotkeyCapture(captureButton.dataset.hotkeyAction);
+    return;
+  }
+
+  const clearButton = event.target.closest("[data-hotkey-clear]");
+
+  if (clearButton) {
+    clearHotkey(clearButton.dataset.hotkeyClear);
+  }
+});
+
+hotkeysDialog?.addEventListener("keydown", event => {
+  if (!hotkeysDialog.classList.contains("open")) {
+    return;
+  }
+
+  if (!hotkeyCaptureActionId) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeHotkeysDialog();
+    }
+
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (event.key === "Escape") {
+    stopHotkeyCapture({
+      keepMessage: true
+    });
+    setHotkeysHelp(`Canceled recording for ${HOTKEY_ACTIONS[hotkeyCaptureActionId].label}.`);
+    return;
+  }
+
+  const binding = hotkeyFromEvent(event);
+
+  if (!binding) {
+    setHotkeysHelp("Modifier-only keys are not valid shortcuts.");
+    return;
+  }
+
+  applyCapturedHotkey(hotkeyCaptureActionId, binding);
+});
+
 voiceToggle.addEventListener("click", () => {
   toggleVoiceTyping();
 });
@@ -969,9 +1573,27 @@ if (voiceCleanToggle) {
 }
 
 window.addEventListener("keydown", event => {
-  if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "v") {
+  if (event.repeat || dialog.classList.contains("open") || hotkeysDialog?.classList.contains("open")) {
+    return;
+  }
+
+  if (hotkeyMatchesEvent(getHotkeyBinding("voiceToggle"), event)) {
+    if (shouldBlockBindingForFocus(getHotkeyBinding("voiceToggle"), event)) {
+      return;
+    }
+
     event.preventDefault();
     toggleVoiceTyping();
+    return;
+  }
+
+  if (hotkeyMatchesEvent(getHotkeyBinding("addPane"), event)) {
+    if (shouldBlockBindingForFocus(getHotkeyBinding("addPane"), event)) {
+      return;
+    }
+
+    event.preventDefault();
+    void addPaneToActiveWorkspace();
   }
 });
 
@@ -1059,6 +1681,9 @@ async function init() {
   runtimeInfo = await window.adeDesktop.getRuntimeInfo();
   profiles = await window.adeDesktop.listProfiles();
   defaultProfileId = chooseDefaultProfileId();
+  setHotkeysHelp();
+  renderHotkeyList();
+  refreshHotkeyUi();
   refreshVoiceCleanupToggle();
   initVoiceTyping();
 
