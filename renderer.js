@@ -225,7 +225,7 @@ function getGridLayout(paneCount) {
   return { cols, rows };
 }
 
-function setActivePane(pane) {
+function setActivePane(pane, { focusTerminal = true } = {}) {
   document.querySelectorAll(".pane.active").forEach(activePane => {
     activePane.classList.remove("active");
   });
@@ -237,7 +237,10 @@ function setActivePane(pane) {
 
   pane.paneEl.classList.add("active");
   activePaneRef = pane.paneEl;
-  pane.term.focus();
+
+  if (focusTerminal) {
+    pane.term.focus();
+  }
 }
 
 function cloneBinding(binding) {
@@ -1094,6 +1097,12 @@ async function createWorkspacePane(ws, { cwd = ws.cwd, profileId = ws.profileId 
   pane.pathEl = pane.paneEl.querySelector(".pane-path");
   pane.runtimeSelect = pane.paneEl.querySelector(".pane-profile-select");
   pane.runtimeSelect.innerHTML = buildProfileOptions(startingProfileId);
+  pane.runtimeSelect.addEventListener("mousedown", () => {
+    setActivePane(pane, { focusTerminal: false });
+  });
+  pane.runtimeSelect.addEventListener("click", event => {
+    event.stopPropagation();
+  });
   pane.runtimeSelect.addEventListener("change", () => {
     switchPaneProfile(pane, pane.runtimeSelect.value);
   });
@@ -1112,7 +1121,12 @@ async function createWorkspacePane(ws, { cwd = ws.cwd, profileId = ws.profileId 
     }
   });
 
-  pane.paneEl.addEventListener("click", () => {
+  pane.paneEl.addEventListener("click", event => {
+    if (event.target.closest(".pane-runtime")) {
+      setActivePane(pane, { focusTerminal: false });
+      return;
+    }
+
     setActivePane(pane);
   });
 
