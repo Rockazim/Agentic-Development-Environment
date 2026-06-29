@@ -161,7 +161,14 @@ function terminalMouseModeCapturesWheel(term) {
   return ["vt200", "drag", "any"].includes(term.modes.mouseTrackingMode);
 }
 
-function getWheelScrollLineCount(event) {
+// Page Up / Page Down escape sequences — Claude Code's fullscreen TUI scrolls its
+// transcript on these. Each Page key moves half a screen; raise WHEEL_LINES_PER_PAGE_KEY
+// for slower/finer scrolling, lower it for faster.
+const PAGE_KEY_UP = "\x1b[5~";
+const PAGE_KEY_DOWN = "\x1b[6~";
+const WHEEL_LINES_PER_PAGE_KEY = 5;
+
+function getWheelDeltaLines(event) {
   if (!event.deltaY) {
     return 0;
   }
@@ -172,27 +179,49 @@ function getWheelScrollLineCount(event) {
       : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
         ? 12
         : 40;
-  const rawAmount = event.deltaY / wheelLineHeight;
-  const magnitude = Math.max(1, Math.round(Math.abs(rawAmount)));
-  return magnitude * Math.sign(rawAmount);
+  return event.deltaY / wheelLineHeight;
 }
 
 function installTerminalWheelScroll(pane) {
   const { term } = pane;
+  pane.wheelPageAccum = 0;
 
   term.attachCustomWheelEventHandler(event => {
     const buffer = term.buffer.active;
-    const hasNormalScrollback = buffer.type === "normal" && buffer.baseY > 0;
-    const lineCount = getWheelScrollLineCount(event);
+    const rawLines = getWheelDeltaLines(event);
 
-    if (!lineCount) {
+    if (!rawLines) {
       return true;
     }
 
-    if (hasNormalScrollback && terminalMouseModeCapturesWheel(term)) {
+    const mouseModeCapturesWheel = terminalMouseModeCapturesWheel(term);
+    const inScrollableShell = buffer.type === "normal" && buffer.baseY > 0;
+    const altScreenNoMouse = buffer.type === "alternate" && !mouseModeCapturesWheel;
+
+    // Cases xterm already handles well, left untouched: scrolling a normal shell's
+    // scrollback, and translating the wheel to arrow keys for alt-screen apps that
+    // don't capture the mouse (vim, less).
+    if (inScrollableShell || altScreenNoMouse) {
+      return true;
+    }
+
+    // Otherwise a full-screen app owns the visible screen and manages its own scroll.
+    // Claude Code's fullscreen TUI runs in the *normal* buffer with no xterm scrollback
+    // (it redraws in place) and does not capture the mouse, so the wheel is a no-op
+    // unless we translate it. Claude scrolls its transcript on Page Up / Page Down, so
+    // send those keys to the PTY, accumulating fractional notches so trackpads don't
+    // fire a page per pixel-event.
+    if (pane.sessionId) {
       event.preventDefault();
       event.stopPropagation();
-      term.scrollLines(lineCount);
+
+      pane.wheelPageAccum += rawLines;
+      const pages = Math.trunc(pane.wheelPageAccum / WHEEL_LINES_PER_PAGE_KEY);
+      if (pages !== 0) {
+        pane.wheelPageAccum -= pages * WHEEL_LINES_PER_PAGE_KEY;
+        const key = pages > 0 ? PAGE_KEY_DOWN : PAGE_KEY_UP;
+        window.adeDesktop.writeTerminal(pane.sessionId, key.repeat(Math.abs(pages)));
+      }
       return false;
     }
 
@@ -1268,6 +1297,7 @@ async function switchPaneProfile(pane, profileId) {
   }
 
   pane.term.reset();
+  installTerminalWheelScroll(pane);
   pane.pathEl.textContent = "starting...";
 
   try {

@@ -246,6 +246,12 @@ class TerminalManager {
         ...process.env,
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
+        // Claude Code's fullscreen TUI draws in the normal buffer and does not capture
+        // the mouse here, so it never receives wheel events. Wheel scrolling is handled
+        // renderer-side by translating the wheel into Page Up / Page Down (see
+        // installTerminalWheelScroll in renderer.js). We deliberately do NOT inject
+        // CLAUDE_AX_SCREEN_READER or CLAUDE_CODE_DISABLE_MOUSE_CLICKS: both degraded
+        // Claude's input handling and broke scrolling further.
         ...launch.env
       },
       useConpty: process.platform === "win32"
